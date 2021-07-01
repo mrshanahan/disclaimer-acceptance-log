@@ -54,10 +54,10 @@
       <HintPath>..\packages\Relativity.Rsapi.10.0.161.8\lib\kCura.Relativity.Client.dll</HintPath>
     </Reference>
     <Reference Include="Relativity.API, Version=10.0.161.8, Culture=neutral, processorArchitecture=MSIL">
-      <HintPath>..\packages\Relativity.Api.10.0.161.8\lib\Relativity.API.dll</HintPath>
+      <HintPath>..\packages\Relativity.Api.10.0.161.8\lib\net462\Relativity.API.dll</HintPath>
     </Reference>
     <Reference Include="Relativity.CustomPages, Version=10.0.161.8, Culture=neutral, processorArchitecture=MSIL">
-      <HintPath>..\packages\Relativity.CustomPages.10.0.161.8\lib\Relativity.CustomPages.dll</HintPath>
+      <HintPath>..\packages\Relativity.CustomPages.10.0.161.8\lib\net462\Relativity.CustomPages.dll</HintPath>
     </Reference>
     <Reference Include="Relativity.Kepler, Version=1.0.1.557, Culture=neutral, processorArchitecture=MSIL">
       <HintPath>..\packages\Relativity.ObjectManager.10.0.161.8\lib\Relativity.Kepler.dll</HintPath>
