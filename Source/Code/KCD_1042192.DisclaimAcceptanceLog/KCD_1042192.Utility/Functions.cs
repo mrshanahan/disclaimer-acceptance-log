@@ -1,12 +1,15 @@
 ﻿using kCura.Relativity.Client;
 using kCura.Relativity.Client.DTOs;
 using Relativity.API;
+using Relativity.Services.Objects;
+using Relativity.Services.Objects.DataContracts;
 using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SqlClient;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 
 namespace KCD_1042192.Utility
 {
@@ -31,16 +34,16 @@ namespace KCD_1042192.Utility
         public static IEnumerable<Int32> GetAllUserIds(IHelper helper)
         {
             var userIds = new List<Int32>();
-            var query = new Query<kCura.Relativity.Client.DTOs.User>
+            var query = new QueryRequest
             {
-                Fields = FieldValue.NoFields
+                ObjectType = new ObjectTypeRef { Name = "User" },
+                Fields = Array.Empty<FieldRef>()
             };
 
-            using (var proxy = helper.GetServicesManager().CreateProxy<IRSAPIClient>(ExecutionIdentity.System))
+            using (var proxy = helper.GetServicesManager().CreateProxy<IObjectManager>(ExecutionIdentity.System))
             {
-                proxy.APIOptions = new APIOptions { WorkspaceID = -1 };
-                var results = QuerySubset.PerformQuerySubset(proxy.Repositories.User, query, 1000);
-                userIds.AddRange(results.Select(x => x.Artifact.ArtifactID).ToList());
+                var results = QuerySubset.PerformQuerySubset(proxy, -1, query, 1000);
+                userIds.AddRange(results.Select(x => x.ArtifactID).ToList());
             }
             return userIds;
         }
@@ -82,19 +85,16 @@ namespace KCD_1042192.Utility
             var retVal = false;
             var applicationArtifactId = FindApplicationArtifactIdOfRelatedObject(helper.GetDBContext(workspaceArtifactId), associatedApplicationObject);
 
-            var app = new kCura.Relativity.Client.DTOs.RelativityApplication(applicationArtifactId)
+            using (var proxy = helper.GetServicesManager().CreateProxy<IObjectManager>(ExecutionIdentity.System))
             {
-                Fields = new List<FieldValue> { new FieldValue(RelativityApplicationFieldNames.Locked) }
-            };
-
-            using (var proxy = helper.GetServicesManager().CreateProxy<IRSAPIClient>(ExecutionIdentity.System))
-            {
-                proxy.APIOptions = new APIOptions { WorkspaceID = workspaceArtifactId };
-                var results = proxy.Repositories.RelativityApplication.Read(app);
-                if (results.Success && results.Results.Any())
+                var request = new ReadRequest
                 {
-                    retVal = results.Results[0].Artifact.Locked.GetValueOrDefault(false);
-                }
+                    Object = new RelativityObjectRef { ArtifactID = applicationArtifactId },
+                    Fields = new List<FieldRef> { new FieldRef { Name = "Locked" } } // TODO: Better reference than just literal?
+                };
+                var results = Task.Run(() => proxy.ReadAsync(workspaceArtifactId, request)).GetAwaiter().GetResult();
+                var rawValue = (bool?)results.Object.FieldValues.First(fv => fv.Field.Name == "Locked").Value;
+                retVal = rawValue ?? false;
             }
 
             return retVal;
@@ -118,18 +118,25 @@ namespace KCD_1042192.Utility
         public static Boolean DisclaimerSolutionIsEnabled(IHelper helper, Int32 workspaceArtifactId)
         {
             var retVal = false;
-            using (var proxy = helper.GetServicesManager().CreateProxy<IRSAPIClient>(ExecutionIdentity.System))
+            using (var proxy = helper.GetServicesManager().CreateProxy<IObjectManager>(ExecutionIdentity.System))
             {
-                proxy.APIOptions = new APIOptions { WorkspaceID = workspaceArtifactId };
-                var query = new Query<RDO>
+                var query = new QueryRequest
                 {
-                    ArtifactTypeGuid = Constants.Guids.Objects.DisclaimerSolutionConfiguration,
-                    Condition = new BooleanCondition(Constants.Guids.Fields.ConfigurationEnabled, BooleanConditionEnum.EqualTo, true),
-                    Sorts = new List<Sort> { new Sort { Field = ArtifactQueryFieldNames.ArtifactID, Direction = SortEnum.Ascending } },
-                    Fields = new List<FieldValue> { new FieldValue(Constants.Guids.Fields.ConfigurationEnabled) }
+                    ObjectType = new ObjectTypeRef { Guid = Constants.Guids.Objects.DisclaimerSolutionConfiguration },
+                    Condition = $"('{Constants.Guids.Fields.ConfigurationEnabled}' == true)",
+                    Sorts = new List<Relativity.Services.Objects.DataContracts.Sort>
+                    {
+                        new Relativity.Services.Objects.DataContracts.Sort
+                        {
+                            FieldIdentifier = new FieldRef { Name = "Artifact ID" },
+                            Direction = Relativity.Services.Objects.DataContracts.SortEnum.Ascending
+                        }
+                    },
+                    Fields = new List<FieldRef> { new FieldRef {  Guid = Constants.Guids.Fields.ConfigurationEnabled } }
                 };
 
-                if (proxy.Repositories.RDO.Query(query).Results.Count > 0)
+                var result = Task.Run(() => proxy.QueryAsync(workspaceArtifactId, query, 1, 1)).GetAwaiter().GetResult();
+                if (result.TotalCount > 0)
                 {
                     retVal = true;
                 }
@@ -190,9 +197,14 @@ namespace KCD_1042192.Utility
                 var query = new Query<RDO>
                 {
                     ArtifactTypeGuid = Constants.Guids.Objects.Disclaimer,
-                    Sorts = new List<Sort>{
-                            new Sort { Guid = Constants.Guids.Fields.DisclaimerOrder, Direction = SortEnum.Ascending}
-                        },
+                    Sorts = new List<kCura.Relativity.Client.Sort>
+                    {
+                        new kCura.Relativity.Client.Sort
+                        {
+                            Guid = Constants.Guids.Fields.DisclaimerOrder,
+                            Direction = kCura.Relativity.Client.SortEnum.Ascending
+                        }
+                    },
                     Fields = FieldValue.AllFields
                 };
 

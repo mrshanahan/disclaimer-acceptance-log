@@ -1,9 +1,9 @@
-﻿using kCura.Relativity.Client;
-using kCura.Relativity.Client.DTOs;
-using kCura.Relativity.Client.Repositories;
+﻿using Relativity.Services.Objects;
+using Relativity.Services.Objects.DataContracts;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace KCD_1042192.Utility
 {
@@ -14,7 +14,7 @@ namespace KCD_1042192.Utility
         /// batched but also batch the returned results to the caller
         /// </summary>
         /// <typeparam name="T"> A DTO with Artifact as the base </typeparam>
-        /// <param name="repository"> The repository of the DTO you'd like to query </param>
+        /// <param name="proxy">Proxy interface for the Object Manager service</param>
         /// <param name="originalQuery">
         /// A preconstructed Query that would usually be sent to the DTO repository
         /// </param>
@@ -22,10 +22,9 @@ namespace KCD_1042192.Utility
         /// The maximum batch size of the full artifacts(with fields) requested from the server
         /// </param>
         /// <returns> IEnumerable list or RDOs </returns>
-        public static IEnumerable<Result<T>> PerformQuerySubset<T>(IGenericRepository<T> repository, Query<T> originalQuery, Int32 batchSize)
-            where T : kCura.Relativity.Client.DTOs.Artifact, new()
+        public static IEnumerable<RelativityObject> PerformQuerySubset(IObjectManager proxy, int workspaceId, QueryRequest originalQuery, Int32 batchSize)
         {
-            var artifactIds = GetQueryArtifactIds(repository, originalQuery, batchSize).ToList();
+            var artifactIds = GetQueryArtifactIds(proxy, workspaceId, originalQuery, batchSize).ToList();
             var currentBatchIds = new List<Int32>();
             var totalCount = 0;
             foreach (var id in artifactIds)
@@ -34,8 +33,8 @@ namespace KCD_1042192.Utility
                 totalCount++;
                 if (totalCount % batchSize == 0 || totalCount == artifactIds.Count())
                 {
-                    var currentBatchArtifacts = RetrieveBatch(repository, originalQuery, currentBatchIds);
-                    foreach (var individualResult in currentBatchArtifacts.Results)
+                    var currentBatchArtifacts = RetrieveBatch(proxy, workspaceId, originalQuery, currentBatchIds);
+                    foreach (var individualResult in currentBatchArtifacts.Objects)
                     {
                         yield return individualResult;
                     }
@@ -48,25 +47,23 @@ namespace KCD_1042192.Utility
         /// requests full artifacts(with selected fields) from the server
         /// </summary>
         /// <typeparam name="T"> A DTO with Artifact as the base </typeparam>
-        /// <param name="repository"> The RSAPI Client </param>
+        /// <param name="proxy"> The Object Manager proxy </param>
         /// <param name="originalQuery"> The developer's original query </param>
         /// <param name="artifactIdBatch"> The artifactIds of the DTOs to return </param>
         /// <returns> Query Result Set of type RDO </returns>
-        private static QueryResultSet<T> RetrieveBatch<T>(IGenericRepository<T> repository, Query<T> originalQuery, IEnumerable<Int32> artifactIdBatch)
-            where T : kCura.Relativity.Client.DTOs.Artifact, new()
+        private static QueryResult RetrieveBatch(IObjectManager proxy, int workspaceId, QueryRequest originalQuery, IEnumerable<Int32> artifactIdBatch)
         {
-            var batchQuery = new Query<T>
+            var csvArtifactIds = string.Join(",", artifactIdBatch);
+            var batchQuery = new QueryRequest
             {
-                ArtifactTypeGuid = originalQuery.ArtifactTypeGuid,
-                ArtifactTypeID = originalQuery.ArtifactTypeID,
-                ArtifactTypeName = originalQuery.ArtifactTypeName,
+                ObjectType = originalQuery.ObjectType,
                 Fields = originalQuery.Fields,
-                Condition = new WholeNumberCondition(ArtifactQueryFieldNames.ArtifactID, NumericConditionEnum.In, artifactIdBatch.ToList()),
+                Condition = $"('Artifact ID' IN ({csvArtifactIds}))",
                 Sorts = originalQuery.Sorts,
                 RelationalField = originalQuery.RelationalField
             };
 
-            var results = QueryRelativity(repository, batchQuery, artifactIdBatch.Count());
+            var results = QueryRelativity(proxy, workspaceId, batchQuery, artifactIdBatch.Count());
 
             return results;
         }
@@ -76,37 +73,30 @@ namespace KCD_1042192.Utility
         /// this utitlity method can be used with all DTOs
         /// </summary>
         /// <typeparam name="T"> DTO </typeparam>
-        /// <param name="repository"> RSASPI Client Repository </param>
+        /// <param name="proxy"> Object Manager proxy </param>
         /// <param name="query"> Query to Execute </param>
         /// <param name="batchSize"> maximum number of items to return in a single call </param>
         /// <returns> traditional Query Result Set </returns>
-        private static QueryResultSet<T> QueryRelativity<T>(IGenericRepository<T> repository, Query<T> query, Int32 batchSize)
-            where T : kCura.Relativity.Client.DTOs.Artifact, new()
+        private static QueryResult QueryRelativity(IObjectManager proxy, int workspaceId, QueryRequest query, Int32 batchSize)
         {
             var nextStart = 1;
-            var retValue = new QueryResultSet<T>();
+            var retValue = new QueryResult();
 
-            var queryResults = repository.Query(query, batchSize);
+            var queryResults = Task.Run(() => proxy.QueryAsync(workspaceId, query, nextStart, batchSize)).GetAwaiter().GetResult();
             CumulateQueryResults(queryResults, retValue);
 
-            if (queryResults.Success && queryResults.Results.Count > 0)
+            if (queryResults.Objects.Count > 0)
             {
-                var queryToken = queryResults.QueryToken;
-                var batchAvailable = !String.IsNullOrEmpty(queryToken);
+                var batchAvailable = nextStart < queryResults.TotalCount;
                 while (batchAvailable)
                 {
-                    nextStart += queryResults.Results.Count;
-                    queryResults = repository.QuerySubset(queryToken, nextStart, batchSize);
+                    nextStart += queryResults.ResultCount;
+                    queryResults = Task.Run(() => proxy.QueryAsync(workspaceId, query, nextStart, batchSize)).GetAwaiter().GetResult();
 
                     CumulateQueryResults(queryResults, retValue);
 
-                    queryToken = queryResults.QueryToken;
-                    batchAvailable = !String.IsNullOrEmpty(queryToken);
+                    batchAvailable = nextStart < queryResults.TotalCount;
                 }
-            }
-            if (queryResults.Success == false)
-            {
-                throw new Exception("Unable to complete Query: " + queryResults.Message);
             }
             return retValue;
         }
@@ -117,12 +107,11 @@ namespace KCD_1042192.Utility
         /// <typeparam name="T"> DTO type </typeparam>
         /// <param name="newAddition"> recent query result </param>
         /// <param name="cumulativeResults"> Query results where values will cumulate </param>
-        private static void CumulateQueryResults<T>(QueryResultSet<T> newAddition, QueryResultSet<T> cumulativeResults)
-            where T : kCura.Relativity.Client.DTOs.Artifact, new()
+        private static void CumulateQueryResults(QueryResult newAddition, QueryResult cumulativeResults)
         {
-            cumulativeResults.Results.AddRange(newAddition.Results);
-            cumulativeResults.Success = newAddition.Success;
-            cumulativeResults.Message += newAddition.Message;
+            cumulativeResults.Objects.AddRange(newAddition.Objects);
+            cumulativeResults.ResultCount += newAddition.ResultCount;
+            cumulativeResults.TotalCount = newAddition.TotalCount;
         }
 
         /// <summary>
@@ -130,27 +119,24 @@ namespace KCD_1042192.Utility
         /// of the results in order to get the results quickly
         /// </summary>
         /// <typeparam name="T"> A DTO with Artifact as the base </typeparam>
-        /// <param name="repository"> The RSAPI Client </param>
+        /// <param name="proxy"> Object Manager proxy </param>
         /// <param name="originalQuery"> The developer's original query </param>
         /// <returns> An IEnumerable list of results represented solely by their ArtifactId </returns>
-        private static IEnumerable<Int32> GetQueryArtifactIds<T>(IGenericRepository<T> repository, Query<T> originalQuery, Int32 batchSize)
-            where T : kCura.Relativity.Client.DTOs.Artifact, new()
+        private static IEnumerable<Int32> GetQueryArtifactIds(IObjectManager proxy, int workspaceId, QueryRequest originalQuery, Int32 batchSize)
         {
             var retVal = new List<Int32>();
-            var artifactIdQuery = new Query<T>
+            var artifactIdQuery = new QueryRequest
             {
-                ArtifactTypeGuid = originalQuery.ArtifactTypeGuid,
-                ArtifactTypeID = originalQuery.ArtifactTypeID,
-                ArtifactTypeName = originalQuery.ArtifactTypeName,
-                Fields = FieldValue.NoFields,
+                ObjectType = originalQuery.ObjectType,
+                Fields = Array.Empty<FieldRef>(),
                 Condition = originalQuery.Condition,
                 Sorts = originalQuery.Sorts,
-                RelationalField = originalQuery.RelationalField
+                RelationalField = originalQuery.RelationalField,
             };
 
-            var results = QueryRelativity(repository, artifactIdQuery, batchSize);
+            var results = QueryRelativity(proxy, workspaceId, artifactIdQuery, batchSize);
 
-            retVal.AddRange(results.Results.Select(x => x.Artifact.ArtifactID).ToList());
+            retVal.AddRange(results.Objects.Select(x => x.ArtifactID).ToList());
 
             return retVal;
         }
