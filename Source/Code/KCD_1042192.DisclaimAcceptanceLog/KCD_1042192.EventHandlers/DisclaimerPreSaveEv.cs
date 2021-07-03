@@ -1,12 +1,15 @@
 ﻿using kCura.EventHandler;
 using kCura.EventHandler.CustomAttributes;
-using kCura.Relativity.Client;
-using kCura.Relativity.Client.DTOs;
 using Relativity.API;
+using Relativity.Services.Objects;
+using Relativity.Services.Objects.DataContracts;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
+
+
 
 namespace KCD_1042192.EventHandlers
 {
@@ -64,30 +67,27 @@ namespace KCD_1042192.EventHandlers
 
         private Boolean YesNoFieldChanged(Guid fieldGuid)
         {
-            bool oldValue = (GetOldFieldValueFromRsapi(fieldGuid, Helper.GetActiveCaseID(), ActiveArtifact.ArtifactID).ValueAsYesNo).GetValueOrDefault(false);
+            bool? rawOldValue = (bool?)GetOldFieldValueFromRsapi(fieldGuid, Helper.GetActiveCaseID(), ActiveArtifact.ArtifactID).Value;
+            bool oldValue = rawOldValue ?? false;
             bool newValue = ((bool?)ActiveArtifact.Fields[fieldGuid.ToString()].Value.Value).GetValueOrDefault(false);
 
             return (!oldValue.Equals(newValue));
         }
 
-        private kCura.Relativity.Client.DTOs.FieldValue GetOldFieldValueFromRsapi(Guid fieldGuid, Int32 workspaceId, Int32 artId)
+        private FieldValuePair GetOldFieldValueFromRsapi(Guid fieldGuid, Int32 workspaceId, Int32 artId)
         {
-            kCura.Relativity.Client.DTOs.FieldValue returnObj = null;
+            FieldValuePair returnObj = null;
 
-            var rdo = new RDO(artId)
+            var request = new ReadRequest
             {
-                ArtifactTypeGuids = new List<Guid> { Utility.Constants.Guids.Objects.Disclaimer },
-                Fields = new List<kCura.Relativity.Client.DTOs.FieldValue> { new kCura.Relativity.Client.DTOs.FieldValue(fieldGuid) }
+                Object = new RelativityObjectRef { ArtifactID = artId },
+                Fields = new List<FieldRef> { new FieldRef { Guid = fieldGuid } }
             };
 
-            using (var proxy = Helper.GetServicesManager().CreateProxy<IRSAPIClient>(ExecutionIdentity.System))
+            using (var proxy = Helper.GetServicesManager().CreateProxy<IObjectManager>(ExecutionIdentity.System))
             {
-                proxy.APIOptions = new APIOptions { WorkspaceID = workspaceId };
-                var result = proxy.Repositories.RDO.Read(rdo);
-                if (result.Success && result.Results.Any())
-                {
-                    returnObj = result.Results[0].Artifact.Fields.First(x => x.Guids.Contains(fieldGuid));
-                }
+                var result = Task.Run(() => proxy.ReadAsync(workspaceId, request)).GetAwaiter().GetResult();
+                returnObj = result.Object.FieldValues.First(f => f.Field.Guids.Contains(fieldGuid));
             }
             return returnObj;
         }

@@ -1,15 +1,16 @@
 ﻿using KCD_1042192.Utility;
 using kCura.EventHandler;
 using kCura.EventHandler.CustomAttributes;
-using kCura.Relativity.Client;
-using kCura.Relativity.Client.DTOs;
 using Relativity.API;
+using Relativity.Services.Objects;
+using Relativity.Services.Objects.DataContracts;
 using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SqlClient;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 
 namespace KCD_1042192.EventHandlers
 {
@@ -52,30 +53,37 @@ namespace KCD_1042192.EventHandlers
         private Boolean FirstConfigObject(Response response)
         {
             var retValue = true;
-            using (var proxy = Helper.GetServicesManager().CreateProxy<IRSAPIClient>(ExecutionIdentity.System))
+            using (var proxy = Helper.GetServicesManager().CreateProxy<IObjectManager>(ExecutionIdentity.System))
             {
-                proxy.APIOptions = new APIOptions { WorkspaceID = Helper.GetActiveCaseID() };
-
-                var query = new Query<RDO>
+                var workspaceId = Helper.GetActiveCaseID();
+                var request = new QueryRequest
                 {
-                    ArtifactTypeGuid = Utility.Constants.Guids.Objects.DisclaimerSolutionConfiguration,
-                    Fields = kCura.Relativity.Client.DTOs.FieldValue.NoFields
+                    ObjectType = new ObjectTypeRef { Guid = Utility.Constants.Guids.Objects.DisclaimerSolutionConfiguration },
+                    Fields = Array.Empty<FieldRef>()
                 };
 
-                var results = proxy.Repositories.RDO.Query(query);
-                if (results.Success && results.Results.Any())
+                QueryResult results;
+                try
                 {
-                    var configObjectsArtIds = results.Results.AsEnumerable().Select(x => x.Artifact.ArtifactID).ToList();
-                    if (!configObjectsArtIds.Contains(ActiveArtifact.ArtifactID))
-                    {
-                        response.Success = false;
-                        response.Message = ErrorMaxInstances;
-                        retValue = false;
-                    }
+                    results = Task.Run(() => proxy.QueryAsync(workspaceId, request, start: 0, length: 1)).GetAwaiter().GetResult();
                 }
-                else if (!results.Success)
+                catch (Exception ex)
                 {
-                    throw new Exception("Unable to Query Config objects. " + results.Message);
+                    throw new Exception("Unable to Query Config objects.", ex);
+                }
+
+                // TODO: This logic is different from the previous logic, which technically checked that if more than zero Disclaimer Configuration
+                // objects existed that the ActiveArtifact is among them. This would mean that it's okay to have multiple Disclaimer Configuration
+                // objects, but you can't create new ones. Since OM pages results and since the code & comments seem to imply that the Disclaimer Configuration
+                // object is a singleton, I thought that this method might be a little cleaner. If we need to stick to the old logic we can
+                // leave that in.
+                var moreThanOneInstanceExists = results.TotalCount > 1;
+                var differentSingletonAlreadyExists = results.TotalCount == 1 && results.Objects.First().ArtifactID != ActiveArtifact.ArtifactID;
+                if (moreThanOneInstanceExists || differentSingletonAlreadyExists)
+                {
+                    response.Success = false;
+                    response.Message = ErrorMaxInstances;
+                    retValue = false;
                 }
                 return retValue;
             }
